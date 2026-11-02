@@ -101,7 +101,7 @@ def _style(el, inherited):
     return st
 
 def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
-    """Return (polylines_in_cm, width_cm, height_cm, info)."""
+    """Return (polylines_in_cm, width_cm, height_cm, info). Coordinates are y-up."""
     tree=etree.parse(path)
     root=tree.getroot()
     wcm,wraw,wu = parse_len(root.get('width'), dpi)
@@ -128,6 +128,7 @@ def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
 
     polys=[]
     def walk(el, mat, st):
+        if not isinstance(el.tag, str): return   # comment / processing instruction
         tag=etree.QName(el).localname
         if tag in SKIP: return
         mat=mat_mul(mat, parse_transform(el.get('transform')))
@@ -143,13 +144,14 @@ def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
                               stroke=st.get('stroke'), fill=st.get('fill')))
     walk(root, IDENT, {})
 
-    # viewBox origin -> 0, then scale to cm
-    out=[]
-    for p in polys:
-        p['pts']=[((x-vbx)*k_x, (y-vby)*k_y) for x,y in p['pts']]
-        out.append(p)
+    # viewBox origin -> 0, scale to cm, and flip y: SVG y grows DOWN, PDF y grows UP.
+    # Everything downstream works in y-up cm, so (0,0) is the bottom-left of the drawing.
     W = wcm if wcm else vbw*k_x
     H = hcm if hcm else vbh*k_y
+    out=[]
+    for p in polys:
+        p['pts']=[((x-vbx)*k_x, H-(y-vby)*k_y) for x,y in p['pts']]
+        out.append(p)
     info=dict(basis=basis, k_x=k_x, k_y=k_y, viewbox=(vbx,vby,vbw,vbh),
               nonuniform=abs(k_x-k_y)>1e-9)
     return out, W, H, info

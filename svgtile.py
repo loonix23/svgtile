@@ -21,10 +21,11 @@ PAGES = {  # width_cm, height_cm  (portrait)
 
 # ---------------------------------------------------------------- geometry
 def rotate90(polys, W, H, times):
-    """Rotate CCW by 90*times about the page. Returns polys, newW, newH."""
+    """Rotate CCW by 90*times (y-up coordinates), keeping the drawing in the
+    positive quadrant. Returns polys, newW, newH."""
     times%=4
     for _ in range(times):
-        polys=[dict(p, pts=[(y, W-x) for (x,y) in p['pts']]) for p in polys]
+        polys=[dict(p, pts=[(H-y, x) for (x,y) in p['pts']]) for p in polys]
         W,H = H,W
     return polys, W, H
 

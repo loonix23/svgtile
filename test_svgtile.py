@@ -12,6 +12,19 @@ def sh(*a):
     return r.stdout
 
 fails=[]
+HAVE_PDFTOPPM=bool(shutil.which('pdftoppm'))
+DPI=254; cm=lambda v:int(round(v/2.54*DPI))
+def render(pdf, page, td):
+    """Render one page to a greyscale numpy array via poppler's pdftoppm (binary PGM).
+    Row 0 is the TOP of the printed sheet."""
+    prefix=os.path.join(td,f'r{page}')
+    subprocess.run(['pdftoppm','-gray','-r',str(DPI),'-f',str(page),'-l',str(page),
+                    '-singlefile',pdf,prefix], check=True)
+    raw=open(prefix+'.pgm','rb').read()
+    magic,w,h,maxval=raw.split(maxsplit=4)[:4]
+    assert magic==b'P5' and int(maxval)<256
+    w,h=int(w),int(h)
+    return np.frombuffer(raw[-w*h:],dtype=np.uint8).reshape(h,w)
 def ck(name, cond, detail=""):
     print(f"  [{'OK ' if cond else 'FAIL'}] {name}{'  '+detail if detail else ''}")
     if not cond: fails.append(name)
@@ -58,20 +71,9 @@ with tempfile.TemporaryDirectory() as td:
 
     print("\n5. glue bands contain identical artwork")
     sh(svg,'-o',os.path.join(td,'e.pdf'),'--no-band-labels','--no-map','--no-calibration')
-    DPI=254; cm=lambda v:int(round(v/2.54*DPI))
-    def render(pdf, page):
-        """Render one page to a greyscale numpy array via poppler's pdftoppm (binary PGM)."""
-        prefix=os.path.join(td,f'r{page}')
-        subprocess.run(['pdftoppm','-gray','-r',str(DPI),'-f',str(page),'-l',str(page),
-                        '-singlefile',pdf,prefix], check=True)
-        raw=open(prefix+'.pgm','rb').read()
-        magic,w,h,maxval=raw.split(maxsplit=4)[:4]
-        assert magic==b'P5' and int(maxval)<256
-        w,h=int(w),int(h)
-        return np.frombuffer(raw[-w*h:],dtype=np.uint8).reshape(h,w)
-    if shutil.which('pdftoppm'):
+    if HAVE_PDFTOPPM:
         epdf=os.path.join(td,'e.pdf')
-        A=render(epdf,1)<128; B=render(epdf,2)<128
+        A=render(epdf,1,td)<128; B=render(epdf,2,td)<128
         a=A[:,cm(21-0.5-3):cm(21-0.5)]; b=B[:,cm(0.5):cm(0.5+3)]
         k=min(a.shape[1],b.shape[1]); a,b=a[:,:k],b[:,:k]
         d=np.logical_xor(a,b).sum()/max(1,(a.sum()+b.sum()))
@@ -101,7 +103,42 @@ with tempfile.TemporaryDirectory() as td:
     rel=parse_path('m0,0 l10,0 l0,10 z')[0][0]
     ck("relative commands", rel[2]==(10.0,10.0))
 
-print("\n8. standalone build")
+    print("\n8. orientation (not mirrored)")
+    # Letter F, 10 x 16 cm: stem on the LEFT, 10 cm bar at the TOP, 7 cm bar in the middle.
+    fsvg=os.path.join(td,'f.svg')
+    open(fsvg,'w').write('<?xml version="1.0"?><!-- comment: must not crash the loader -->'
+        '<svg xmlns="http://www.w3.org/2000/svg" width="150mm" height="200mm" viewBox="0 0 150 200">'
+        '<!-- another comment --><path d="M20,20 L20,180 M20,20 L120,20 M20,90 L90,90" '
+        'stroke="black" fill="none"/></svg>')
+    def lines(img):
+        """Return (row of 10 cm horizontal bar, rows of 7 cm bar, col of 16 cm line,
+        cols of 10 cm vertical, cols of 7 cm vertical) - whatever exists."""
+        rows=img.sum(axis=1); cols=img.sum(axis=0)
+        near=lambda arr,L: np.where(np.abs(arr-cm(L))<cm(0.6))[0]
+        return dict(h10=near(rows,10), h7=near(rows,7), h16=near(rows,16),
+                    v10=near(cols,10), v7=near(cols,7), v16=near(cols,16))
+    if HAVE_PDFTOPPM:
+        flags=['--no-map','--no-calibration','--no-band-labels']
+        sh(fsvg,'-o',os.path.join(td,'f0.pdf'),*flags)
+        L=lines(render(os.path.join(td,'f0.pdf'),1,td)<128)
+        ok=all(len(L[k]) for k in ('h10','h7','v16'))
+        ck("upright: long bar above short bar", ok and L['h10'].max()<L['h7'].min())
+        ck("upright: stem on the left", ok and L['v16'].max()<cm(6))
+        sh(fsvg,'-o',os.path.join(td,'f90.pdf'),'--rotate','90',*flags)
+        img=render(os.path.join(td,'f90.pdf'),1,td)<128
+        L=lines(img)
+        ok=all(len(L[k]) for k in ('v10','v7','h16'))
+        # F turned 90 deg counter-clockwise: stem along the bottom, bars pointing up
+        # from it, long (former top) bar on the left.
+        ck("rotate 90 is counter-clockwise: long bar left of short bar",
+           ok and L['v10'].max()<L['v7'].min())
+        bar_rows=np.where(img[:,L['v10'][len(L['v10'])//2]])[0] if ok else []
+        ck("rotate 90 is counter-clockwise: stem at the bottom, bars point up",
+           ok and L['h16'].min()>bar_rows.mean())
+    else:
+        print("  [skip] pdftoppm not found (install poppler)")
+
+print("\n9. standalone build")
 r=subprocess.run([sys.executable, os.path.join(HERE,'build_standalone.py'),'--check'],
                  capture_output=True, text=True)
 ck("svgtile-standalone.py matches modules", r.returncode==0,
