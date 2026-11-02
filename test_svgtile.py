@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Self-test for svgtile. Run: python3 test_svgtile.py"""
-import os, subprocess, sys, tempfile, numpy as np
+import os, shutil, subprocess, sys, tempfile, numpy as np
 from pypdf import PdfReader
 import re
 
@@ -58,17 +58,26 @@ with tempfile.TemporaryDirectory() as td:
 
     print("\n5. glue bands contain identical artwork")
     sh(svg,'-o',os.path.join(td,'e.pdf'),'--no-band-labels','--no-map','--no-calibration')
-    try:
-        from pdf2image import convert_from_path
-        DPI=254; cm=lambda v:int(round(v/2.54*DPI))
-        pages=convert_from_path(os.path.join(td,'e.pdf'),dpi=DPI)
-        A=np.array(pages[0].convert('L'))<128; B=np.array(pages[1].convert('L'))<128
+    DPI=254; cm=lambda v:int(round(v/2.54*DPI))
+    def render(pdf, page):
+        """Render one page to a greyscale numpy array via poppler's pdftoppm (binary PGM)."""
+        prefix=os.path.join(td,f'r{page}')
+        subprocess.run(['pdftoppm','-gray','-r',str(DPI),'-f',str(page),'-l',str(page),
+                        '-singlefile',pdf,prefix], check=True)
+        raw=open(prefix+'.pgm','rb').read()
+        magic,w,h,maxval=raw.split(maxsplit=4)[:4]
+        assert magic==b'P5' and int(maxval)<256
+        w,h=int(w),int(h)
+        return np.frombuffer(raw[-w*h:],dtype=np.uint8).reshape(h,w)
+    if shutil.which('pdftoppm'):
+        epdf=os.path.join(td,'e.pdf')
+        A=render(epdf,1)<128; B=render(epdf,2)<128
         a=A[:,cm(21-0.5-3):cm(21-0.5)]; b=B[:,cm(0.5):cm(0.5+3)]
         k=min(a.shape[1],b.shape[1]); a,b=a[:,:k],b[:,:k]
         d=np.logical_xor(a,b).sum()/max(1,(a.sum()+b.sum()))
         ck("overlap artwork identical", d<0.01, f"{d*100:.2f}% mismatch")
-    except ImportError:
-        print("  [skip] pdf2image not installed")
+    else:
+        print("  [skip] pdftoppm not found (install poppler)")
 
     print("\n6. transforms")
     tf=os.path.join(td,'tf.svg')
@@ -91,6 +100,12 @@ with tempfile.TemporaryDirectory() as td:
     ck("elliptical arc radius exact", err<1e-9, f"max error {err:.1e}")
     rel=parse_path('m0,0 l10,0 l0,10 z')[0][0]
     ck("relative commands", rel[2]==(10.0,10.0))
+
+print("\n8. standalone build")
+r=subprocess.run([sys.executable, os.path.join(HERE,'build_standalone.py'),'--check'],
+                 capture_output=True, text=True)
+ck("svgtile-standalone.py matches modules", r.returncode==0,
+   "" if r.returncode==0 else "run: python3 build_standalone.py")
 
 print("\n"+("ALL TESTS PASSED" if not fails else f"FAILED: {fails}"))
 sys.exit(1 if fails else 0)

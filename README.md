@@ -25,6 +25,9 @@ chmod +x ~/tools/svgtile.py
 mv ~/tools/svgtile.py ~/tools/svgtile
 ```
 
+`svgtile-standalone.py` is generated from the three modules by
+`python3 build_standalone.py`. Don't edit it directly.
+
 Note this drops `svgdoc.py` and `svgpath.py` — generic names — into a PATH
 directory. Harmless (they aren't executable), but the single file avoids it.
 
@@ -39,7 +42,7 @@ sudo pacman -S python-reportlab python-lxml
 Optional, for `test_svgtile.py` only:
 
 ```bash
-sudo pacman -S python-pypdf python-pdf2image poppler
+sudo pacman -S python-pypdf python-numpy poppler
 ```
 
 Or keep it isolated in a venv:
@@ -61,7 +64,7 @@ python3 svgtile.py pattern.svg --page a3 --overlap 4
 ```
 
 Requires `reportlab` and `lxml` (`pip install reportlab lxml`).
-Only `pypdf` + `pdf2image` are needed for the self-test.
+The self-test additionally needs `pypdf`, `numpy` and poppler's `pdftoppm`.
 
 ## Scale — read this first
 
