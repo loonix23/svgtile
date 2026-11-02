@@ -1,0 +1,612 @@
+#!/usr/bin/env python3
+"""
+svgtile - split an SVG into glue-together A4 PDF sheets at true 1:1 scale.
+Single-file build. Requires: reportlab, lxml.
+Docs + tests: see README.md in the source distribution.
+"""
+from lxml import etree
+from reportlab.lib.colors import black, Color
+from reportlab.pdfgen import canvas as rl_canvas
+import argparse, math, os, sys
+import math, re
+import re, math
+
+# ====================================================================
+# SVG path parsing
+# ====================================================================
+
+NUM = re.compile(r'[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?')
+CMD = re.compile(r'([MmLlHhVvCcSsQqTtAaZz])')
+
+def _tok(d):
+    out=[]
+    for part in CMD.split(d):
+        part=part.strip()
+        if not part: continue
+        if len(part)==1 and part.isalpha(): out.append(part)
+        else: out.extend(float(x) for x in NUM.findall(part))
+    return out
+
+def _bez3(p0,p1,p2,p3,n):
+    return [( (1-t)**3*p0[0]+3*(1-t)**2*t*p1[0]+3*(1-t)*t*t*p2[0]+t**3*p3[0],
+              (1-t)**3*p0[1]+3*(1-t)**2*t*p1[1]+3*(1-t)*t*t*p2[1]+t**3*p3[1])
+            for t in (i/n for i in range(1,n+1))]
+
+def _bez2(p0,p1,p2,n):
+    return [( (1-t)**2*p0[0]+2*(1-t)*t*p1[0]+t*t*p2[0],
+              (1-t)**2*p0[1]+2*(1-t)*t*p1[1]+t*t*p2[1])
+            for t in (i/n for i in range(1,n+1))]
+
+def _arc(p0, rx, ry, rot, laf, sf, p1, n):
+    """SVG elliptical arc -> points (endpoint parameterisation, per SVG spec F.6)."""
+    if p0==p1: return []
+    rx,ry = abs(rx),abs(ry)
+    if rx==0 or ry==0: return [p1]
+    phi = math.radians(rot)
+    cs,sn = math.cos(phi), math.sin(phi)
+    dx2,dy2 = (p0[0]-p1[0])/2.0, (p0[1]-p1[1])/2.0
+    x1p =  cs*dx2 + sn*dy2
+    y1p = -sn*dx2 + cs*dy2
+    # correct out-of-range radii
+    lam = x1p*x1p/(rx*rx) + y1p*y1p/(ry*ry)
+    if lam>1:
+        s=math.sqrt(lam); rx*=s; ry*=s
+    num = rx*rx*ry*ry - rx*rx*y1p*y1p - ry*ry*x1p*x1p
+    den = rx*rx*y1p*y1p + ry*ry*x1p*x1p
+    co = 0.0 if num<0 or den==0 else math.sqrt(num/den)
+    if laf==sf: co=-co
+    cxp =  co*rx*y1p/ry
+    cyp = -co*ry*x1p/rx
+    cx = cs*cxp - sn*cyp + (p0[0]+p1[0])/2.0
+    cy = sn*cxp + cs*cyp + (p0[1]+p1[1])/2.0
+    def ang(ux,uy,vx,vy):
+        d=math.hypot(ux,uy)*math.hypot(vx,vy)
+        if d==0: return 0.0
+        c=max(-1,min(1,(ux*vx+uy*vy)/d))
+        a=math.acos(c)
+        return -a if ux*vy-uy*vx<0 else a
+    th1 = ang(1,0,(x1p-cxp)/rx,(y1p-cyp)/ry)
+    dth = ang((x1p-cxp)/rx,(y1p-cyp)/ry,(-x1p-cxp)/rx,(-y1p-cyp)/ry)
+    if not sf and dth>0: dth-=2*math.pi
+    elif sf and dth<0: dth+=2*math.pi
+    steps=max(2,int(n*abs(dth)/math.pi))
+    pts=[]
+    for i in range(1,steps+1):
+        th=th1+dth*i/steps
+        pts.append((cs*rx*math.cos(th)-sn*ry*math.sin(th)+cx,
+                    sn*rx*math.cos(th)+cs*ry*math.sin(th)+cy))
+    return pts
+
+def parse_path(d, curve_steps=24):
+    """Return list of subpaths: (points, closed)."""
+    t=_tok(d); i=0
+    subs=[]; cur=[]; closed=False
+    x=y=0.0; sx=sy=0.0
+    pcx=pcy=None   # previous cubic ctrl
+    pqx=pqy=None   # previous quad ctrl
+    cmd=None
+    def flush():
+        nonlocal cur,closed
+        if len(cur)>1: subs.append((cur,closed))
+        cur=[]; closed=False
+    while i<len(t):
+        if isinstance(t[i],str):
+            cmd=t[i]; i+=1
+            if cmd in 'Zz':
+                if cur:
+                    cur.append((sx,sy)); closed=True; flush()
+                    x,y=sx,sy
+                continue
+        rel = cmd.islower(); c=cmd.upper()
+        if c=='M':
+            nx,ny=t[i],t[i+1]; i+=2
+            if rel: nx+=x; ny+=y
+            flush(); x,y=nx,ny; sx,sy=x,y; cur=[(x,y)]
+            cmd='l' if rel else 'L'
+            pcx=pqx=None
+        elif c=='L':
+            nx,ny=t[i],t[i+1]; i+=2
+            if rel: nx+=x; ny+=y
+            cur.append((nx,ny)); x,y=nx,ny; pcx=pqx=None
+        elif c=='H':
+            nx=t[i]; i+=1
+            if rel: nx+=x
+            cur.append((nx,y)); x=nx; pcx=pqx=None
+        elif c=='V':
+            ny=t[i]; i+=1
+            if rel: ny+=y
+            cur.append((x,ny)); y=ny; pcx=pqx=None
+        elif c in 'CS':
+            if c=='C':
+                x1,y1,x2,y2,nx,ny=t[i:i+6]; i+=6
+                if rel: x1+=x;y1+=y;x2+=x;y2+=y;nx+=x;ny+=y
+            else:
+                x2,y2,nx,ny=t[i:i+4]; i+=4
+                if rel: x2+=x;y2+=y;nx+=x;ny+=y
+                x1,y1 = (2*x-pcx,2*y-pcy) if pcx is not None else (x,y)
+            cur+= _bez3((x,y),(x1,y1),(x2,y2),(nx,ny),curve_steps)
+            pcx,pcy=x2,y2; pqx=None; x,y=nx,ny
+        elif c in 'QT':
+            if c=='Q':
+                x1,y1,nx,ny=t[i:i+4]; i+=4
+                if rel: x1+=x;y1+=y;nx+=x;ny+=y
+            else:
+                nx,ny=t[i:i+2]; i+=2
+                if rel: nx+=x;ny+=y
+                x1,y1 = (2*x-pqx,2*y-pqy) if pqx is not None else (x,y)
+            cur+= _bez2((x,y),(x1,y1),(nx,ny),curve_steps)
+            pqx,pqy=x1,y1; pcx=None; x,y=nx,ny
+        elif c=='A':
+            rx,ry,rot,laf,sf,nx,ny=t[i:i+7]; i+=7
+            if rel: nx+=x; ny+=y
+            cur+= _arc((x,y),rx,ry,rot,int(laf),int(sf),(nx,ny),curve_steps)
+            x,y=nx,ny; pcx=pqx=None
+        else:
+            i+=1
+    flush()
+    return subs
+
+# ====================================================================
+# SVG document -> polylines in cm
+# ====================================================================
+
+SVG_NS='{http://www.w3.org/2000/svg}'
+# CSS absolute units -> cm (SVG/CSS reference: 96 user units = 1 inch)
+UNIT_CM = {'mm':0.1,'cm':1.0,'in':2.54,'pt':2.54/72,'pc':2.54/6,
+           'px':2.54/96,'q':0.025,'':None}
+LEN=re.compile(r'^\s*([-+]?[\d.]+(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$')
+
+def parse_len(s, dpi=96.0):
+    """Return (value_in_cm or None if unitless/%, raw_value, unit)."""
+    if s is None: return (None,None,None)
+    m=LEN.match(str(s))
+    if not m: return (None,None,None)
+    v=float(m.group(1)); u=m.group(2).lower()
+    if u=='%': return (None,v,'%')
+    if u=='' : return (None,v,'')
+    if u=='px': return (v*2.54/dpi, v, 'px')
+    f=UNIT_CM.get(u)
+    return ((v*f if f else None), v, u)
+
+# ---------------- transforms ----------------
+def mat_mul(a,b):
+    return (a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1],
+            a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3],
+            a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5])
+def mat_apply(m,p): return (m[0]*p[0]+m[2]*p[1]+m[4], m[1]*p[0]+m[3]*p[1]+m[5])
+IDENT=(1,0,0,1,0,0)
+
+TF=re.compile(r'(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)')
+def parse_transform(s):
+    if not s: return IDENT
+    m=IDENT
+    for name,args in TF.findall(s):
+        a=[float(x) for x in re.findall(r'[-+]?[\d.]+(?:[eE][-+]?\d+)?',args)]
+        if name=='matrix' and len(a)==6: t=tuple(a)
+        elif name=='translate': t=(1,0,0,1,a[0], a[1] if len(a)>1 else 0)
+        elif name=='scale':     sx=a[0]; sy=a[1] if len(a)>1 else sx; t=(sx,0,0,sy,0,0)
+        elif name=='rotate':
+            r=math.radians(a[0]); c,s2=math.cos(r),math.sin(r)
+            t=(c,s2,-s2,c,0,0)
+            if len(a)>=3:
+                t=mat_mul((1,0,0,1,a[1],a[2]), mat_mul(t,(1,0,0,1,-a[1],-a[2])))
+        elif name=='skewX': t=(1,0,math.tan(math.radians(a[0])),1,0,0)
+        elif name=='skewY': t=(1,math.tan(math.radians(a[0])),0,1,0,0)
+        else: t=IDENT
+        m=mat_mul(m,t)
+    return m
+
+def _f(el,name,dflt=0.0):
+    v=el.get(name)
+    if v is None: return dflt
+    m=LEN.match(v)
+    return float(m.group(1)) if m else dflt
+
+def _shape_points(el, steps):
+    tag=etree.QName(el).localname
+    if tag=='path':
+        d=el.get('d')
+        return parse_path(d,steps) if d else []
+    if tag=='line':
+        return [([(_f(el,'x1'),_f(el,'y1')),(_f(el,'x2'),_f(el,'y2'))],False)]
+    if tag in ('polyline','polygon'):
+        nums=[float(x) for x in re.findall(r'[-+]?[\d.]+(?:[eE][-+]?\d+)?',el.get('points',''))]
+        pts=list(zip(nums[0::2],nums[1::2]))
+        if not pts: return []
+        if tag=='polygon': pts=pts+[pts[0]]
+        return [(pts, tag=='polygon')]
+    if tag=='rect':
+        x,y,w,h=_f(el,'x'),_f(el,'y'),_f(el,'width'),_f(el,'height')
+        rx,ry=_f(el,'rx'),_f(el,'ry')
+        if rx or ry:
+            rx=rx or ry; ry=ry or rx; rx=min(rx,w/2); ry=min(ry,h/2)
+            d=(f"M{x+rx},{y} H{x+w-rx} A{rx},{ry} 0 0 1 {x+w},{y+ry} V{y+h-ry} "
+               f"A{rx},{ry} 0 0 1 {x+w-rx},{y+h} H{x+rx} A{rx},{ry} 0 0 1 {x},{y+h-ry} "
+               f"V{y+ry} A{rx},{ry} 0 0 1 {x+rx},{y} Z")
+            return parse_path(d,steps)
+        return [([(x,y),(x+w,y),(x+w,y+h),(x,y+h),(x,y)],True)]
+    if tag in ('circle','ellipse'):
+        cx,cy=_f(el,'cx'),_f(el,'cy')
+        r =_f(el,'r'); rx=_f(el,'rx') or r; ry=_f(el,'ry') or r
+        if rx<=0 or ry<=0: return []
+        n=max(24,steps*2)
+        pts=[(cx+rx*math.cos(2*math.pi*i/n), cy+ry*math.sin(2*math.pi*i/n)) for i in range(n+1)]
+        return [(pts,True)]
+    return []
+
+SKIP={'defs','metadata','title','desc','clipPath','mask','marker','symbol','pattern','filter'}
+
+def _style(el, inherited):
+    st=dict(inherited)
+    css=el.get('style')
+    if css:
+        for kv in css.split(';'):
+            if ':' in kv:
+                k,v=kv.split(':',1); st[k.strip()]=v.strip()
+    for k in ('stroke','stroke-width','fill','stroke-dasharray'):
+        if el.get(k) is not None: st[k]=el.get(k)
+    return st
+
+def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
+    """Return (polylines_in_cm, width_cm, height_cm, info)."""
+    tree=etree.parse(path)
+    root=tree.getroot()
+    wcm,wraw,wu = parse_len(root.get('width'), dpi)
+    hcm,hraw,hu = parse_len(root.get('height'), dpi)
+    vb=root.get('viewBox')
+    if vb:
+        n=[float(x) for x in re.findall(r'[-+]?[\d.]+(?:[eE][-+]?\d+)?',vb)]
+        vbx,vby,vbw,vbh=n[:4]
+    else:
+        vbx=vby=0.0; vbw=wraw or 100.0; vbh=hraw or 100.0
+
+    # user units -> cm
+    if scale_override:
+        k_x=k_y=scale_override
+        basis=f"manual override {scale_override} cm/unit"
+    elif wcm and hcm and vbw and vbh:
+        k_x=wcm/vbw; k_y=hcm/vbh
+        basis=f"width/height ({root.get('width')} x {root.get('height')}) vs viewBox"
+    elif wcm and vbw:
+        k_x=k_y=wcm/vbw; basis="width vs viewBox"
+    else:
+        k_x=k_y=2.54/dpi
+        basis=f"no physical size in SVG -> assumed {dpi} user-units/inch"
+
+    polys=[]
+    def walk(el, mat, st):
+        tag=etree.QName(el).localname
+        if tag in SKIP: return
+        mat=mat_mul(mat, parse_transform(el.get('transform')))
+        st=_style(el,st)
+        if tag in ('g','svg','a'):
+            for ch in el: walk(ch, mat, st)
+            return
+        for pts,closed in _shape_points(el,curve_steps):
+            tp=[mat_apply(mat,p) for p in pts]
+            polys.append(dict(pts=tp, closed=closed,
+                              width=st.get('stroke-width'),
+                              dash=st.get('stroke-dasharray'),
+                              stroke=st.get('stroke'), fill=st.get('fill')))
+    walk(root, IDENT, {})
+
+    # viewBox origin -> 0, then scale to cm
+    out=[]
+    for p in polys:
+        p['pts']=[((x-vbx)*k_x, (y-vby)*k_y) for x,y in p['pts']]
+        out.append(p)
+    W = wcm if wcm else vbw*k_x
+    H = hcm if hcm else vbh*k_y
+    info=dict(basis=basis, k_x=k_x, k_y=k_y, viewbox=(vbx,vby,vbw,vbh),
+              nonuniform=abs(k_x-k_y)>1e-9)
+    return out, W, H, info
+
+# ====================================================================
+# tiling + PDF output
+# ====================================================================
+#!/usr/bin/env python3
+"""
+svgtile - split an SVG into glue-together A4 (or Letter/A3) PDF sheets.
+
+Designed for sewing patterns: preserves true 1:1 scale, stays vector, and prints
+monochrome with paired registration marks suitable for light-table alignment.
+
+  python3 svgtile.py pattern.svg -o pattern_a4.pdf
+  python3 svgtile.py pattern.svg --rotate 90 --overlap 3 --no-trim
+"""
+
+CM = 28.3464566929  # postscript points per cm
+
+PAGES = {  # width_cm, height_cm  (portrait)
+    'a4':(21.0,29.7), 'a3':(29.7,42.0), 'letter':(21.59,27.94), 'legal':(21.59,35.56),
+}
+
+# ---------------------------------------------------------------- geometry
+def rotate90(polys, W, H, times):
+    """Rotate CCW by 90*times about the page. Returns polys, newW, newH."""
+    times%=4
+    for _ in range(times):
+        polys=[dict(p, pts=[(y, W-x) for (x,y) in p['pts']]) for p in polys]
+        W,H = H,W
+    return polys, W, H
+
+def bbox(polys):
+    xs=[x for p in polys for x,_ in p['pts']]; ys=[y for p in polys for _,y in p['pts']]
+    return (min(xs),min(ys),max(xs),max(ys)) if xs else (0,0,0,0)
+
+def tile_starts(total, span, step):
+    s=[0.0]; cov=span
+    while cov < total - 1e-9:
+        s.append(cov-(span-step)); cov+=step
+    return s
+
+# ---------------------------------------------------------------- marks
+def build_marks(CS, RS, span_w, span_h, overlap, MW, MH, spacing=4.0, min_sep=2.8):
+    """Registration marks on glue-band centrelines, defined in MASTER space so the
+    same mark is emitted by both sheets sharing a band (guaranteed pairing)."""
+    vs=[CS[c+1]+overlap/2 for c in range(len(CS)-1)]
+    hs=[RS[r+1]+overlap/2 for r in range(len(RS)-1)]
+    marks=[]
+    for vx in vs:
+        y=spacing/2
+        while y<MH: marks.append((vx,y)); y+=spacing
+    for hy in hs:
+        x=spacing/2
+        while x<MW: marks.append((x,hy)); x+=spacing
+    marks=sorted({(round(a,3),round(b,3)) for a,b in marks})
+    kept=[]
+    for m in marks:
+        if all((m[0]-k[0])**2+(m[1]-k[1])**2 >= min_sep**2 for k in kept): kept.append(m)
+    return kept, vs, hs
+
+# ---------------------------------------------------------------- drawing
+def draw_mark(c, X, Y, label, mono=True):
+    R=0.42
+    c.setLineWidth(0.7); c.setStrokeColor(black)
+    c.circle(X*CM, Y*CM, R*CM, stroke=1, fill=0)
+    c.line((X-R*1.75)*CM, Y*CM, (X+R*1.75)*CM, Y*CM)
+    c.line(X*CM, (Y-R*1.75)*CM, X*CM, (Y+R*1.75)*CM)
+    c.setFillColor(black); c.circle(X*CM, Y*CM, 0.07*CM, stroke=0, fill=1)
+    if label:
+        c.setFont('Courier',4.4); c.drawString((X+R*1.9)*CM,(Y+R*0.55)*CM, label)
+
+def dash_for(p, mono):
+    d=p.get('dash')
+    if d and d not in ('none','None'):
+        try:
+            vals=[float(v)*CM for v in d.replace(',',' ').split()]
+            if vals: return vals
+        except ValueError: pass
+    return None
+
+def draw_polys(c, polys, ox, oy, mono, default_lw):
+    for p in polys:
+        pts=p['pts']
+        if len(pts)<2: continue
+        lw=default_lw
+        if p.get('width'):
+            try: lw=max(0.15, float(str(p['width']).replace('px','')) * 0.35)
+            except ValueError: pass
+        c.setLineWidth(lw)
+        c.setStrokeColor(black)
+        d=dash_for(p,mono)
+        c.setDash(d if d else [])
+        path=c.beginPath()
+        path.moveTo((pts[0][0]+ox)*CM, (pts[0][1]+oy)*CM)
+        for x,y in pts[1:]:
+            path.lineTo((x+ox)*CM, (y+oy)*CM)
+        if p.get('closed'): path.close()
+        c.drawPath(path, stroke=1, fill=0)
+    c.setDash([])
+
+# ---------------------------------------------------------------- main
+def main():
+    ap=argparse.ArgumentParser(description="Split an SVG into glue-together A4 PDF sheets at true 1:1 scale.")
+    ap.add_argument('svg')
+    ap.add_argument('-o','--output', help='output PDF (default: <input>_tiled.pdf)')
+    ap.add_argument('--rotate', type=int, default=0, choices=[0,90,180,270],
+                    help='rotate artwork before tiling (degrees CCW)')
+    ap.add_argument('--auto-rotate', action='store_true',
+                    help='rotate 90 automatically if it reduces the sheet count')
+    ap.add_argument('--page', default='a4', choices=sorted(PAGES))
+    ap.add_argument('--landscape', action='store_true')
+    ap.add_argument('--overlap', type=float, default=3.0, help='glue band width in cm (default 3)')
+    ap.add_argument('--margin', type=float, default=0.5,
+                    help='unprintable border in cm (default 0.5 = near full-bleed, no trimming)')
+    ap.add_argument('--trim-marks', action='store_true',
+                    help='add corner crop marks (for cut-and-butt assembly instead of overlap gluing)')
+    ap.add_argument('--dpi', type=float, default=96.0,
+                    help='user-units per inch when the SVG has no physical size (default 96)')
+    ap.add_argument('--scale', type=float, default=None,
+                    help='force N cm per SVG user unit (overrides all size detection)')
+    ap.add_argument('--scale-factor', type=float, default=1.0,
+                    help='enlarge/shrink the finished artwork, e.g. 1.05 for +5%%')
+    ap.add_argument('--curve-steps', type=int, default=24, help='curve flattening quality')
+    ap.add_argument('--line-width', type=float, default=0.9, help='default stroke width in pt')
+    ap.add_argument('--mark-spacing', type=float, default=4.0, help='cm between registration marks')
+    ap.add_argument('--no-map', action='store_true', help='skip the assembly map page')
+    ap.add_argument('--no-band-labels', action='store_true',
+                    help='omit glue-band boundary lines and labels (cleaner sheets; '
+                         'also makes overlapping sheets pixel-identical in the band)')
+    ap.add_argument('--no-calibration', action='store_true', help='skip the 2 cm calibration square')
+    ap.add_argument('--title', default=None, help='title printed on the map page')
+    a=ap.parse_args()
+
+    if not os.path.exists(a.svg): sys.exit(f"error: no such file: {a.svg}")
+    out=a.output or os.path.splitext(a.svg)[0]+'_tiled.pdf'
+
+    polys,W,H,info = load_svg(a.svg, dpi=a.dpi, curve_steps=a.curve_steps, scale_override=a.scale)
+    if not polys: sys.exit("error: no drawable geometry found in the SVG "
+                           "(only path/line/polyline/polygon/rect/circle/ellipse are supported)")
+    if a.scale_factor!=1.0:
+        f=a.scale_factor
+        polys=[dict(p, pts=[(x*f,y*f) for x,y in p['pts']]) for p in polys]
+        W*=f; H*=f
+
+    PW,PH = PAGES[a.page]
+    if a.landscape: PW,PH = PH,PW
+
+    def sheets_for(w,h):
+        uw,uh = PW-2*a.margin, PH-2*a.margin
+        if uw<=a.overlap or uh<=a.overlap: return 10**6,0,0
+        sx,sy = uw-a.overlap, uh-a.overlap
+        return len(tile_starts(w,uw,sx))*len(tile_starts(h,uh,sy)), uw, uh
+
+    rot = a.rotate//90
+    if a.auto_rotate:
+        _p,_W,_H = rotate90(polys,W,H,1)
+        if sheets_for(_W,_H)[0] < sheets_for(W,H)[0]: rot=1
+    if rot:
+        polys,W,H = rotate90(polys,W,H,rot)
+
+    # normalise to origin
+    x0,y0,x1,y1 = bbox(polys)
+    polys=[dict(p, pts=[(x-x0+a.margin, y-y0+a.margin) for x,y in p['pts']]) for p in polys]
+    MW, MH = (x1-x0)+2*a.margin, (y1-y0)+2*a.margin
+
+    USE_W, USE_H = PW-2*a.margin, PH-2*a.margin
+    if USE_W<=a.overlap or USE_H<=a.overlap:
+        sys.exit("error: overlap is too large for the page size")
+    STEP_X, STEP_Y = USE_W-a.overlap, USE_H-a.overlap
+    CS = tile_starts(MW, USE_W, STEP_X)
+    RS = tile_starts(MH, USE_H, STEP_Y)
+    NC, NR = len(CS), len(RS)
+    MARKS, VS, HS = build_marks(CS,RS,USE_W,USE_H,a.overlap,MW,MH,a.mark_spacing)
+
+    def sheet_no(r,c): return (NR-1-r)*NC + c + 1   # 1 = top-left, reading order
+
+    c=rl_canvas.Canvas(out, pagesize=(PW*CM, PH*CM))
+    c.setTitle(a.title or os.path.basename(a.svg))
+
+    # ---------------- assembly map ----------------
+    if not a.no_map:
+        sc=min((PW-3)/MW, (PH*0.60-2)/MH)
+        ox=(PW-MW*sc)/2; oy=PH*0.36
+        c.setFont('Helvetica-Bold',11)
+        c.drawCentredString(PW/2*CM,(PH-1.3)*CM, f"ASSEMBLY MAP - {NC*NR} sheets ({NC} across x {NR} down)")
+        c.setFont('Helvetica',8)
+        c.drawCentredString(PW/2*CM,(PH-1.85)*CM, "sheet 1 = TOP-LEFT, numbered left to right")
+        c.saveState(); c.translate(ox*CM,oy*CM); c.scale(sc,sc)
+        c.setLineWidth(0.8/sc)
+        for p in polys:
+            pts=p['pts']
+            if len(pts)<2: continue
+            pa=c.beginPath(); pa.moveTo(pts[0][0]*CM,pts[0][1]*CM)
+            for x,y in pts[1:]: pa.lineTo(x*CM,y*CM)
+            if p.get('closed'): pa.close()
+            c.drawPath(pa,stroke=1,fill=0)
+        c.setLineWidth(0.6/sc); c.setDash([3/sc,2/sc])
+        for r,ry in enumerate(RS):
+            for cc,cx0 in enumerate(CS):
+                x1_,y1_=min(cx0+USE_W,MW),min(ry+USE_H,MH)
+                c.rect(cx0*CM,ry*CM,(x1_-cx0)*CM,(y1_-ry)*CM,stroke=1,fill=0)
+        c.setDash([])
+        c.setFont('Helvetica-Bold',max(5,8/sc))
+        for r,ry in enumerate(RS):
+            for cc,cx0 in enumerate(CS):
+                c.drawString((cx0+0.4)*CM, (min(ry+USE_H,MH)-1.2)*CM, str(sheet_no(r,cc)))
+        c.restoreState()
+        tx=1.2; ty=PH*0.34
+        lines=[
+            (a.title or os.path.basename(a.svg)),
+            "",
+            f"Artwork {MW-2*a.margin:.1f} x {MH-2*a.margin:.1f} cm   ->   {NC*NR} sheets of {a.page.upper()}"
+            f"{' landscape' if a.landscape else ''}",
+            f"Scale basis: {info['basis']}",
+            f"Rotation applied: {rot*90} deg" if rot else "Rotation applied: none",
+            "",
+            "PRINTING: 100% / \"Actual Size\". NOT \"Fit to page\".",
+            ("Sheet 1 carries a 2 cm calibration square - measure it before cutting."
+             if not a.no_calibration else ""),
+            "",
+            "ASSEMBLY - NO TRIMMING NEEDED:" if not a.trim_marks else "ASSEMBLY - TRIM AT CROP MARKS:",
+            (f"  Artwork runs to within {a.margin*10:.0f} mm of the paper edge and every sheet"
+             if not a.trim_marks else "  Trim each sheet on the corner crop marks, then butt them together."),
+            (f"  overlaps its neighbour by {a.overlap:.0f} cm, so sheets glue as printed."
+             if not a.trim_marks else ""),
+            "  Each registration mark is a CROSS IN A CIRCLE labelled with its master",
+            "  coordinate. The SAME mark and number is printed on BOTH sheets sharing a",
+            "  glue band - lay the crosses on top of each other on a light table, check",
+            "  the numbers agree, then glue. Work along the top row, then each row below.",
+            "",
+            "No colour is used anywhere - safe for a monochrome laser printer.",
+        ]
+        c.setFont('Courier',7)
+        for ln in lines:
+            if ln: c.drawString(tx*CM, ty*CM, ln)
+            ty-=0.42
+        c.showPage()
+
+    # ---------------- tiles ----------------
+    for r,y0_ in enumerate(RS):
+        for cc,x0_ in enumerate(CS):
+            k=sheet_no(r,cc)
+            ox,oy = a.margin-x0_, a.margin-y0_
+            draw_polys(c, polys, ox, oy, True, a.line_width)
+
+            px1 = a.margin+min(USE_W, MW-x0_)
+            py1 = a.margin+min(USE_H, MH-y0_)
+            # glue band boundaries
+            if not a.no_band_labels:
+             c.setLineWidth(0.6); c.setDash([6,2,1,2]); c.setStrokeColor(black)
+             c.setFont('Helvetica',5.2)
+             if cc>0:
+                 gx=a.margin+a.overlap
+                 c.line(gx*CM,0,gx*CM,PH*CM)
+                 c.saveState(); c.translate((gx-0.15)*CM,(PH/2)*CM); c.rotate(90)
+                 c.drawRightString(0,0,f"<- {a.overlap:.0f} cm GLUE BAND shared with sheet {k-1}"); c.restoreState()
+             if cc<NC-1:
+                 gx=PW-a.margin-a.overlap
+                 c.line(gx*CM,0,gx*CM,PH*CM)
+                 c.saveState(); c.translate((gx+0.15)*CM,(PH/2)*CM); c.rotate(90)
+                 c.drawString(0,0,f"{a.overlap:.0f} cm GLUE BAND shared with sheet {k+1} ->"); c.restoreState()
+             # page BOTTOM = low master y -> neighbour is the row below (exists when r>0),
+             # which prints as a HIGHER sheet number (k+NC).
+             if r>0:
+                 gy=a.margin+a.overlap
+                 c.line(0,gy*CM,PW*CM,gy*CM)
+                 c.drawCentredString((PW/2)*CM,(gy-0.32)*CM,f"v {a.overlap:.0f} cm GLUE BAND shared with sheet {k+NC}")
+             # page TOP = high master y -> neighbour is the row above (exists when r<NR-1) = k-NC
+             if r<NR-1:
+                 gy=PH-a.margin-a.overlap
+                 c.line(0,gy*CM,PW*CM,gy*CM)
+                 c.drawCentredString((PW/2)*CM,(gy+0.18)*CM,f"^ {a.overlap:.0f} cm GLUE BAND shared with sheet {k-NC}")
+             c.setDash([])
+
+            if a.trim_marks:
+                c.setLineWidth(0.6)
+                for (mx,my) in [(a.margin,a.margin),(px1,a.margin),(a.margin,py1),(px1,py1)]:
+                    c.line((mx-0.5)*CM,my*CM,(mx+0.5)*CM,my*CM)
+                    c.line(mx*CM,(my-0.5)*CM,mx*CM,(my+0.5)*CM)
+
+            for (mx,my) in MARKS:
+                PX,PY = mx+ox, my+oy
+                if -0.6<PX<PW+0.6 and -0.6<PY<PH+0.6:
+                    draw_mark(c,PX,PY,f"{mx:.0f},{my:.0f}")
+
+            if k==1 and not a.no_calibration:
+                c.setLineWidth(1.2); c.setStrokeColor(black)
+                c.rect((a.margin+0.4)*CM,(PH-a.margin-2.6)*CM,2*CM,2*CM,stroke=1,fill=0)
+                c.setFont('Helvetica',5)
+                c.drawString((a.margin+0.4)*CM,(PH-a.margin-3.0)*CM,
+                             "2 cm CALIBRATION SQUARE - measure before cutting")
+
+            c.setFont('Helvetica-Bold',7.5)
+            c.drawCentredString((PW/2)*CM,(PH-0.42)*CM,
+                                f"SHEET {k} of {NC*NR}   (row {r+1} from bottom, col {cc+1})")
+            if not a.no_band_labels:
+                c.setFont('Helvetica',5)
+                c.drawString(a.margin*CM, 0.22*CM, f"{os.path.basename(a.svg)} - print at 100%")
+            c.showPage()
+    c.save()
+
+    print(f"artwork      {MW-2*a.margin:.2f} x {MH-2*a.margin:.2f} cm")
+    print(f"scale basis  {info['basis']}")
+    if info['nonuniform']:
+        print(f"WARNING      non-uniform scale (x {info['k_x']:.5f} vs y {info['k_y']:.5f} cm/unit)")
+    if rot: print(f"rotation     {rot*90} deg")
+    print(f"grid         {NC} x {NR} = {NC*NR} sheets ({a.page.upper()}), {a.overlap} cm overlap")
+    print(f"marks        {len(MARKS)} registration marks")
+    print(f"written      {out}")
+
+if __name__=='__main__': main()

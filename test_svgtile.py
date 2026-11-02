@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Self-test for svgtile. Run: python3 test_svgtile.py"""
+import os, subprocess, sys, tempfile, numpy as np
+from pypdf import PdfReader
+import re
+
+HERE=os.path.dirname(os.path.abspath(__file__))
+def sh(*a):
+    r=subprocess.run([sys.executable, os.path.join(HERE,'svgtile.py')]+list(a),
+                     capture_output=True, text=True)
+    if r.returncode: print(r.stdout, r.stderr); raise SystemExit("svgtile failed")
+    return r.stdout
+
+fails=[]
+def ck(name, cond, detail=""):
+    print(f"  [{'OK ' if cond else 'FAIL'}] {name}{'  '+detail if detail else ''}")
+    if not cond: fails.append(name)
+
+with tempfile.TemporaryDirectory() as td:
+    svg=os.path.join(td,'t.svg')
+    open(svg,'w').write('<svg xmlns="http://www.w3.org/2000/svg" width="300mm" height="200mm" '
+        'viewBox="0 0 300 200"><rect x="0" y="0" width="300" height="200" fill="none" stroke="black"/>'
+        '<circle cx="150" cy="100" r="60" fill="none" stroke="black"/></svg>')
+
+    print("\n1. scale detection")
+    out=sh(svg,'-o',os.path.join(td,'a.pdf'),'--no-map')
+    ck("300mm x 200mm -> 30.00 x 20.00 cm", "30.00 x 20.00" in out)
+
+    print("\n2. rotation")
+    o90=sh(svg,'-o',os.path.join(td,'b.pdf'),'--rotate','90','--no-map')
+    ck("90 deg swaps dimensions", "20.00 x 30.00" in o90)
+    o180=sh(svg,'-o',os.path.join(td,'c.pdf'),'--rotate','180','--no-map')
+    ck("180 deg preserves dimensions", "30.00 x 20.00" in o180)
+
+    print("\n3. page geometry")
+    rd=PdfReader(os.path.join(td,'a.pdf'))
+    w=float(rd.pages[0].mediabox.width)/72*2.54
+    h=float(rd.pages[0].mediabox.height)/72*2.54
+    ck("A4 page size", abs(w-21)<0.02 and abs(h-29.7)<0.02, f"{w:.3f} x {h:.3f} cm")
+
+    print("\n4. neighbour labels reference real sheets")
+    sh(svg,'-o',os.path.join(td,'d.pdf'),'--title','test')
+    rd=PdfReader(os.path.join(td,'d.pdf'))
+    m=re.search(r'(\d+) across x (\d+) down', rd.pages[0].extract_text())
+    NC,NR=int(m.group(1)),int(m.group(2)); n=NC*NR
+    def sn(r,c): return (NR-1-r)*NC+c+1
+    bad=0
+    for i,pg in enumerate(rd.pages[1:]):
+        r,c=divmod(i,NC); k=sn(r,c)
+        refs=set(int(x) for x in re.findall(r'shared with sheet (\d+)', pg.extract_text() or ""))
+        exp=set()
+        if c>0: exp.add(k-1)
+        if c<NC-1: exp.add(k+1)
+        if r>0: exp.add(k+NC)
+        if r<NR-1: exp.add(k-NC)
+        if refs!=exp: bad+=1
+    ck("all glue-band labels correct", bad==0, f"{n} sheets, {bad} wrong")
+
+    print("\n5. glue bands contain identical artwork")
+    sh(svg,'-o',os.path.join(td,'e.pdf'),'--no-band-labels','--no-map','--no-calibration')
+    try:
+        from pdf2image import convert_from_path
+        DPI=254; cm=lambda v:int(round(v/2.54*DPI))
+        pages=convert_from_path(os.path.join(td,'e.pdf'),dpi=DPI)
+        A=np.array(pages[0].convert('L'))<128; B=np.array(pages[1].convert('L'))<128
+        a=A[:,cm(21-0.5-3):cm(21-0.5)]; b=B[:,cm(0.5):cm(0.5+3)]
+        k=min(a.shape[1],b.shape[1]); a,b=a[:,:k],b[:,:k]
+        d=np.logical_xor(a,b).sum()/max(1,(a.sum()+b.sum()))
+        ck("overlap artwork identical", d<0.01, f"{d*100:.2f}% mismatch")
+    except ImportError:
+        print("  [skip] pdf2image not installed")
+
+    print("\n6. transforms")
+    tf=os.path.join(td,'tf.svg')
+    open(tf,'w').write('<svg xmlns="http://www.w3.org/2000/svg" width="200mm" height="100mm" '
+        'viewBox="0 0 200 100"><g transform="translate(120,50) scale(2,0.5)">'
+        '<circle cx="0" cy="0" r="10" fill="none" stroke="black"/></g></svg>')
+    sys.path.insert(0,HERE)
+    from svgdoc import load_svg
+    p,_,_,_=load_svg(tf)
+    e=np.array(p[0]['pts'])
+    ck("nested translate+scale exact",
+       abs((e[:,0].max()-e[:,0].min())-4.0)<1e-6 and abs((e[:,1].max()-e[:,1].min())-1.0)<1e-6,
+       f"{e[:,0].max()-e[:,0].min():.4f} x {e[:,1].max()-e[:,1].min():.4f} cm")
+
+    print("\n7. path commands")
+    from svgpath import parse_path
+    import math
+    arc=parse_path('M0,0 A5,5 0 0 1 10,0',60)[0][0]
+    err=max(abs(math.hypot(x-5,y)-5) for x,y in arc)
+    ck("elliptical arc radius exact", err<1e-9, f"max error {err:.1e}")
+    rel=parse_path('m0,0 l10,0 l0,10 z')[0][0]
+    ck("relative commands", rel[2]==(10.0,10.0))
+
+print("\n"+("ALL TESTS PASSED" if not fails else f"FAILED: {fails}"))
+sys.exit(1 if fails else 0)
