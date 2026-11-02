@@ -588,8 +588,9 @@ def main():
 
     rot = a.rotate//90
     if a.auto_rotate:
-        _p,_t,_W,_H = rotate90(polys,texts,W,H,1)
-        if sheets_for(_W,_H)[0] < sheets_for(W,H)[0]: rot=1
+        # judge the drawing itself, not the SVG page it sits on; a 90 deg turn swaps its sides
+        x0,y0,x1,y1 = bbox(polys,texts)
+        if sheets_for(y1-y0,x1-x0)[0] < sheets_for(x1-x0,y1-y0)[0]: rot=1
     if rot:
         polys,texts,W,H = rotate90(polys,texts,W,H,rot)
 

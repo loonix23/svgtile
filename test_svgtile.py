@@ -44,6 +44,14 @@ with tempfile.TemporaryDirectory() as td:
     ck("90 deg swaps dimensions", "20.00 x 30.00" in o90)
     o180=sh(svg,'-o',os.path.join(td,'c.pdf'),'--rotate','180','--no-map')
     ck("180 deg preserves dimensions", "30.00 x 20.00" in o180)
+    # 60 x 45 cm SVG page holding only a 25 x 40 cm piece. By the page size rotating
+    # looks worse (8 -> 9 sheets); by the actual drawing it saves one (2x2=4 -> 3x1=3).
+    ar=os.path.join(td,'ar.svg')
+    open(ar,'w').write('<svg xmlns="http://www.w3.org/2000/svg" width="600mm" height="450mm" '
+        'viewBox="0 0 600 450"><rect x="10" y="10" width="250" height="400" fill="none" stroke="black"/></svg>')
+    oar=sh(ar,'-o',os.path.join(td,'ar.pdf'),'--auto-rotate','--no-map')
+    ck("--auto-rotate judges the drawing, not the SVG page", "rotation     90 deg" in oar and
+       "= 3 sheets" in oar, re.search(r'grid.*', oar).group(0))
 
     print("\n3. page geometry")
     rd=PdfReader(os.path.join(td,'a.pdf'))
