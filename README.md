@@ -128,6 +128,7 @@ edge if you want perfect continuity.
 | `--mark-spacing N` | cm between registration marks (default 4) |
 | `--no-band-labels` | omit glue-band lines/labels for cleaner sheets |
 | `--no-map` / `--no-calibration` | omit the map page / calibration square |
+| `--no-text` | omit the SVG's text |
 
 ## SVG support
 
@@ -136,7 +137,15 @@ Handled: `path` (all commands incl. elliptical arcs, absolute and relative),
 nested `g`, and `transform` (`matrix`, `translate`, `scale`, `rotate` with or
 without centre, `skewX`, `skewY`). `stroke-dasharray` is preserved.
 
-Not handled: text (convert to paths first), images, gradients, clip paths,
+`text` and positioned `tspan` (multi-line text) are printed in black, with
+`font-size`, `text-anchor` and any rotation from transforms. Skewed or unevenly
+stretched text is approximated by size and angle only. The font named in
+`font-family` is embedded when a TrueType file for it is found: via fontconfig,
+the usual font directories, or FreeCAD's TechDraw font folder (so FreeCAD's
+`osifont` works without installing it). Otherwise Helvetica is used. The run
+summary lists which font file was used for each family.
+
+Not handled: images, gradients, clip paths,
 filters, CSS stylesheets, `use`/`symbol` references. Everything prints as black
 strokes — fills are ignored, which is what you want for a cutting pattern.
 

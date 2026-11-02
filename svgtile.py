@@ -8,9 +8,11 @@ monochrome with paired registration marks suitable for light-table alignment.
   python3 svgtile.py pattern.svg -o pattern_a4.pdf
   python3 svgtile.py pattern.svg --rotate 90 --overlap 3 --no-trim
 """
-import argparse, math, os, sys
+import argparse, glob, math, os, shutil, subprocess, sys
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.colors import black, Color
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from svgdoc import load_svg
 
 CM = 28.3464566929  # postscript points per cm
@@ -20,17 +22,33 @@ PAGES = {  # width_cm, height_cm  (portrait)
 }
 
 # ---------------------------------------------------------------- geometry
-def rotate90(polys, W, H, times):
+def rotate90(polys, texts, W, H, times):
     """Rotate CCW by 90*times (y-up coordinates), keeping the drawing in the
-    positive quadrant. Returns polys, newW, newH."""
+    positive quadrant. Returns polys, texts, newW, newH."""
     times%=4
     for _ in range(times):
         polys=[dict(p, pts=[(H-y, x) for (x,y) in p['pts']]) for p in polys]
+        texts=[dict(t, x=H-t['y'], y=t['x'], angle=t['angle']+90) for t in texts]
         W,H = H,W
-    return polys, W, H
+    return polys, texts, W, H
 
-def bbox(polys):
-    xs=[x for p in polys for x,_ in p['pts']]; ys=[y for p in polys for _,y in p['pts']]
+def transform(polys, texts, f=1.0, dx=0.0, dy=0.0):
+    """Scale by f about the origin, then shift by (dx,dy)."""
+    polys=[dict(p, pts=[(x*f+dx, y*f+dy) for x,y in p['pts']]) for p in polys]
+    texts=[dict(t, x=t['x']*f+dx, y=t['y']*f+dy, size=t['size']*f) for t in texts]
+    return polys, texts
+
+def text_corners(t):
+    """The four corners of a text's box (baseline-anchored, descender to ascender), cm."""
+    w=pdfmetrics.stringWidth(t['text'], t['font'], t['size']*CM)/CM
+    x0={'middle':-w/2,'end':-w}.get(t['anchor'],0.0)
+    a=math.radians(t['angle']); ca,sa=math.cos(a),math.sin(a)
+    return [(t['x']+u*ca-v*sa, t['y']+u*sa+v*ca)
+            for u in (x0,x0+w) for v in (-0.25*t['size'], 0.8*t['size'])]
+
+def bbox(polys, texts=()):
+    pts=[q for p in polys for q in p['pts']]+[q for t in texts for q in text_corners(t)]
+    xs=[x for x,_ in pts]; ys=[y for _,y in pts]
     return (min(xs),min(ys),max(xs),max(ys)) if xs else (0,0,0,0)
 
 def tile_starts(total, span, step):
@@ -38,6 +56,58 @@ def tile_starts(total, span, step):
     while cov < total - 1e-9:
         s.append(cov-(span-step)); cov+=step
     return s
+
+# ---------------------------------------------------------------- fonts
+# Where to look for a TrueType file when fontconfig doesn't know the family.
+# FreeCAD ships its TechDraw fonts (osifont, ...) here without registering them.
+FONT_DIRS=['~/.local/share/fonts','~/.fonts','/usr/share/fonts','/usr/local/share/fonts',
+           '/usr/share/freecad*/Mod/TechDraw/Resources/fonts',
+           '/usr/lib/freecad*/Mod/TechDraw/Resources/fonts',
+           '/usr/lib64/freecad*/Mod/TechDraw/Resources/fonts',
+           '/opt/freecad*/**/Mod/TechDraw/Resources/fonts',
+           '/Applications/FreeCAD.app/Contents/Resources/Mod/TechDraw/Resources/fonts']
+BUILTIN={'sans-serif':'Helvetica','sans':'Helvetica','arial':'Helvetica','helvetica':'Helvetica',
+         'serif':'Times-Roman','times':'Times-Roman','times new roman':'Times-Roman',
+         'monospace':'Courier','courier':'Courier','courier new':'Courier'}
+BOLD={'Helvetica':'Helvetica-Bold','Times-Roman':'Times-Bold','Courier':'Courier-Bold'}
+
+def find_font_file(family):
+    """TrueType file for a font family, or None."""
+    fam=family.lower()
+    if shutil.which('fc-match'):
+        r=subprocess.run(['fc-match','-f','%{family}|%{file}',family],capture_output=True,text=True)
+        names,_,path=r.stdout.partition('|')
+        if fam in [n.strip().lower() for n in names.split(',')] and path.lower().endswith('.ttf'):
+            return path
+    hits=[]
+    for pat in FONT_DIRS:
+        for d in glob.glob(os.path.expanduser(pat), recursive=True):
+            for f in glob.glob(os.path.join(d,'**','*.ttf'), recursive=True):
+                b=os.path.basename(f).lower()
+                if b.startswith(fam.replace(' ','')) and not any(x in b for x in ('italic','oblique','bold')):
+                    hits.append(f)
+    return min(hits, key=lambda f:len(os.path.basename(f))) if hits else None
+
+def resolve_fonts(texts):
+    """Set t['font'] to a registered reportlab font name. Returns {family: description}."""
+    report={}; cache={}
+    for t in texts:
+        fam=t['family']
+        if fam not in cache:
+            name=None
+            path=None if fam.lower() in BUILTIN else find_font_file(fam)
+            if path:
+                try:
+                    name='svgtile-'+fam
+                    pdfmetrics.registerFont(TTFont(name, path)); report[fam]=path
+                except Exception as e:   # e.g. CFF-flavoured .ttf, broken file
+                    name=None; report[fam]=f"{path} unusable ({e}) -> Helvetica"
+            if not name:
+                name=BUILTIN.get(fam.lower(),'Helvetica')
+                report.setdefault(fam, name if fam.lower() in BUILTIN else f"not found -> {name}")
+            cache[fam]=name
+        t['font']=BOLD.get(cache[fam],cache[fam]) if t['bold'] else cache[fam]
+    return report
 
 # ---------------------------------------------------------------- marks
 def build_marks(CS, RS, span_w, span_h, overlap, MW, MH, spacing=4.0, min_sep=2.8):
@@ -98,6 +168,15 @@ def draw_polys(c, polys, ox, oy, mono, default_lw):
         c.drawPath(path, stroke=1, fill=0)
     c.setDash([])
 
+def draw_texts(c, texts, ox, oy):
+    c.setFillColor(black)
+    for t in texts:
+        c.saveState()
+        c.translate((t['x']+ox)*CM, (t['y']+oy)*CM); c.rotate(t['angle'])
+        c.setFont(t['font'], t['size']*CM)
+        {'middle':c.drawCentredString,'end':c.drawRightString}.get(t['anchor'],c.drawString)(0,0,t['text'])
+        c.restoreState()
+
 # ---------------------------------------------------------------- main
 def main():
     ap=argparse.ArgumentParser(description="Split an SVG into glue-together A4 PDF sheets at true 1:1 scale.")
@@ -128,19 +207,22 @@ def main():
                     help='omit glue-band boundary lines and labels (cleaner sheets; '
                          'also makes overlapping sheets pixel-identical in the band)')
     ap.add_argument('--no-calibration', action='store_true', help='skip the 2 cm calibration square')
+    ap.add_argument('--no-text', action='store_true', help='omit the SVG\'s text')
     ap.add_argument('--title', default=None, help='title printed on the map page')
     a=ap.parse_args()
 
     if not os.path.exists(a.svg): sys.exit(f"error: no such file: {a.svg}")
     out=a.output or os.path.splitext(a.svg)[0]+'_tiled.pdf'
 
-    polys,W,H,info = load_svg(a.svg, dpi=a.dpi, curve_steps=a.curve_steps, scale_override=a.scale)
-    if not polys: sys.exit("error: no drawable geometry found in the SVG "
-                           "(only path/line/polyline/polygon/rect/circle/ellipse are supported)")
+    polys,texts,W,H,info = load_svg(a.svg, dpi=a.dpi, curve_steps=a.curve_steps, scale_override=a.scale)
+    if a.no_text: texts=[]
+    if not polys and not texts:
+        sys.exit("error: no drawable geometry found in the SVG "
+                 "(only path/line/polyline/polygon/rect/circle/ellipse/text are supported)")
+    fonts=resolve_fonts(texts)
     if a.scale_factor!=1.0:
-        f=a.scale_factor
-        polys=[dict(p, pts=[(x*f,y*f) for x,y in p['pts']]) for p in polys]
-        W*=f; H*=f
+        polys,texts=transform(polys,texts,a.scale_factor)
+        W*=a.scale_factor; H*=a.scale_factor
 
     PW,PH = PAGES[a.page]
     if a.landscape: PW,PH = PH,PW
@@ -153,14 +235,14 @@ def main():
 
     rot = a.rotate//90
     if a.auto_rotate:
-        _p,_W,_H = rotate90(polys,W,H,1)
+        _p,_t,_W,_H = rotate90(polys,texts,W,H,1)
         if sheets_for(_W,_H)[0] < sheets_for(W,H)[0]: rot=1
     if rot:
-        polys,W,H = rotate90(polys,W,H,rot)
+        polys,texts,W,H = rotate90(polys,texts,W,H,rot)
 
     # normalise to origin
-    x0,y0,x1,y1 = bbox(polys)
-    polys=[dict(p, pts=[(x-x0+a.margin, y-y0+a.margin) for x,y in p['pts']]) for p in polys]
+    x0,y0,x1,y1 = bbox(polys,texts)
+    polys,texts = transform(polys,texts,1.0,a.margin-x0,a.margin-y0)
     MW, MH = (x1-x0)+2*a.margin, (y1-y0)+2*a.margin
 
     USE_W, USE_H = PW-2*a.margin, PH-2*a.margin
@@ -194,6 +276,7 @@ def main():
             for x,y in pts[1:]: pa.lineTo(x*CM,y*CM)
             if p.get('closed'): pa.close()
             c.drawPath(pa,stroke=1,fill=0)
+        draw_texts(c, texts, 0, 0)
         c.setLineWidth(0.6/sc); c.setDash([3/sc,2/sc])
         for r,ry in enumerate(RS):
             for cc,cx0 in enumerate(CS):
@@ -242,6 +325,7 @@ def main():
             k=sheet_no(r,cc)
             ox,oy = a.margin-x0_, a.margin-y0_
             draw_polys(c, polys, ox, oy, True, a.line_width)
+            draw_texts(c, texts, ox, oy)
 
             px1 = a.margin+min(USE_W, MW-x0_)
             py1 = a.margin+min(USE_H, MH-y0_)
@@ -306,6 +390,9 @@ def main():
     if rot: print(f"rotation     {rot*90} deg")
     print(f"grid         {NC} x {NR} = {NC*NR} sheets ({a.page.upper()}), {a.overlap} cm overlap")
     print(f"marks        {len(MARKS)} registration marks")
+    if texts:
+        print(f"text         {len(texts)} labels")
+        for fam,desc in fonts.items(): print(f"font         {fam}: {desc}")
     print(f"written      {out}")
 
 if __name__=='__main__': main()

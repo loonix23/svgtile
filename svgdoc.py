@@ -87,6 +87,8 @@ def _shape_points(el, steps):
         return [(pts,True)]
     return []
 
+STYLE_KEYS=('stroke','stroke-width','fill','stroke-dasharray',
+            'font-size','font-family','font-weight','text-anchor')
 SKIP={'defs','metadata','title','desc','clipPath','mask','marker','symbol','pattern','filter'}
 
 def _style(el, inherited):
@@ -96,12 +98,50 @@ def _style(el, inherited):
         for kv in css.split(';'):
             if ':' in kv:
                 k,v=kv.split(':',1); st[k.strip()]=v.strip()
-    for k in ('stroke','stroke-width','fill','stroke-dasharray'):
+    for k in STYLE_KEYS:
         if el.get(k) is not None: st[k]=el.get(k)
     return st
 
+# ---------------- text ----------------
+XML_SPACE='{http://www.w3.org/XML/1998/namespace}space'
+
+def _font_size(v):
+    """CSS font-size -> SVG user units (unitless/px are user units)."""
+    m=LEN.match(str(v)) if v is not None else None
+    if not m: return 16.0
+    n=float(m.group(1)); u=m.group(2).lower()
+    if u in ('','px'): return n
+    if UNIT_CM.get(u): return n*UNIT_CM[u]/(2.54/96)
+    return 16.0    # em, %, keywords: no context to resolve them; use the CSS default
+
+def _clean(s, preserve):
+    if s is None: return ''
+    s=s.replace('\n',' ').replace('\t',' ')
+    return s if preserve else re.sub(r' +',' ',s)
+
+def _text_runs(el, st):
+    """<text> -> [(string, x, y, style)]. Every <tspan> with its own x/y starts a new
+    run (that's how multi-line text is written); other content joins the current run."""
+    preserve=el.get(XML_SPACE)=='preserve'
+    runs=[]; cur=[_clean(el.text,preserve), _f(el,'x'), _f(el,'y'), st]
+    for ch in el:
+        if not isinstance(ch.tag,str):
+            cur[0]+=_clean(ch.tail,preserve); continue
+        if etree.QName(ch).localname=='tspan' and (ch.get('x') is not None or ch.get('y') is not None):
+            runs.append(cur)
+            cst=_style(ch,st)
+            cur=[_clean(''.join(ch.itertext()),preserve), _f(ch,'x',cur[1]), _f(ch,'y',cur[2]), cst]
+        else:
+            cur[0]+=_clean(''.join(ch.itertext()),preserve)
+        cur[0]+=_clean(ch.tail,preserve)
+    runs.append(cur)
+    return [(t.strip() if not preserve else t, x, y, s) for t,x,y,s in runs if t.strip()]
+
 def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
-    """Return (polylines_in_cm, width_cm, height_cm, info). Coordinates are y-up."""
+    """Return (polylines, texts, width_cm, height_cm, info). Everything is in cm, y-up.
+
+    Each text is a dict: text, x, y (baseline anchor point), angle (degrees CCW),
+    size (font size in cm), anchor ('start'|'middle'|'end'), family, bold."""
     tree=etree.parse(path)
     root=tree.getroot()
     wcm,wraw,wu = parse_len(root.get('width'), dpi)
@@ -126,7 +166,7 @@ def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
         k_x=k_y=2.54/dpi
         basis=f"no physical size in SVG -> assumed {dpi} user-units/inch"
 
-    polys=[]
+    polys=[]; texts=[]
     def walk(el, mat, st):
         if not isinstance(el.tag, str): return   # comment / processing instruction
         tag=etree.QName(el).localname
@@ -135,6 +175,15 @@ def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
         st=_style(el,st)
         if tag in ('g','svg','a'):
             for ch in el: walk(ch, mat, st)
+            return
+        if tag=='text':
+            for txt,x,y,tst in _text_runs(el,st):
+                texts.append(dict(text=txt, p=mat_apply(mat,(x,y)),
+                                  dir=(mat[0],mat[1]), up=(mat[2],mat[3]),
+                                  fs=_font_size(tst.get('font-size')),
+                                  anchor=tst.get('text-anchor','start'),
+                                  family=tst.get('font-family','sans-serif'),
+                                  bold=str(tst.get('font-weight','')) in ('bold','bolder','600','700','800','900')))
             return
         for pts,closed in _shape_points(el,curve_steps):
             tp=[mat_apply(mat,p) for p in pts]
@@ -152,6 +201,17 @@ def load_svg(path, dpi=96.0, curve_steps=24, scale_override=None):
     for p in polys:
         p['pts']=[((x-vbx)*k_x, H-(y-vby)*k_y) for x,y in p['pts']]
         out.append(p)
+    tout=[]
+    for t in texts:
+        (px,py),(a,b),(c,d)=t.pop('p'),t.pop('dir'),t.pop('up')
+        fs=t.pop('fs')
+        # baseline direction and glyph height in y-up cm; skew/non-uniform stretch of
+        # the glyphs themselves is not reproduced (approximated by size + angle)
+        t.update(x=(px-vbx)*k_x, y=H-(py-vby)*k_y,
+                 angle=math.degrees(math.atan2(-b*k_y, a*k_x)),
+                 size=fs*math.hypot(c*k_x, d*k_y),
+                 family=t['family'].split(',')[0].strip().strip('\'"'))
+        tout.append(t)
     info=dict(basis=basis, k_x=k_x, k_y=k_y, viewbox=(vbx,vby,vbw,vbh),
               nonuniform=abs(k_x-k_y)>1e-9)
-    return out, W, H, info
+    return out, tout, W, H, info

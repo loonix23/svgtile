@@ -88,7 +88,7 @@ with tempfile.TemporaryDirectory() as td:
         '<circle cx="0" cy="0" r="10" fill="none" stroke="black"/></g></svg>')
     sys.path.insert(0,HERE)
     from svgdoc import load_svg
-    p,_,_,_=load_svg(tf)
+    p,_,_,_,_=load_svg(tf)
     e=np.array(p[0]['pts'])
     ck("nested translate+scale exact",
        abs((e[:,0].max()-e[:,0].min())-4.0)<1e-6 and abs((e[:,1].max()-e[:,1].min())-1.0)<1e-6,
@@ -138,7 +138,54 @@ with tempfile.TemporaryDirectory() as td:
     else:
         print("  [skip] pdftoppm not found (install poppler)")
 
-print("\n9. standalone build")
+    print("\n9. text")
+    # 15 x 20 cm frame on one A4 sheet. The artwork sits 2 x margin (1 cm) from the
+    # bottom-left paper edge, so point (x,y) mm in the SVG lands at
+    # x = 1.0 + x/10 cm from the left, y = 29.7 - 1.0 - 20 + y/10 = 8.7 + y/10 cm from the top.
+    tsvg=os.path.join(td,'txt.svg')
+    open(tsvg,'w').write('<svg xmlns="http://www.w3.org/2000/svg" width="150mm" height="200mm" viewBox="0 0 150 200">'
+        '<rect x="0" y="0" width="150" height="200" fill="none" stroke="black"/>'
+        '<text x="20" y="50" font-size="10" font-family="sans-serif">HELLO</text>'
+        '<text x="140" y="80" font-size="10" text-anchor="end">END</text>'
+        '<g transform="rotate(90 75 120)"><text x="75" y="120" font-size="10">DOWN</text></g>'
+        '<text font-size="8"><tspan x="20" y="150">LINE1</tspan><tspan x="20" y="165">LINE2</tspan></text>'
+        '<text x="20" y="190" font-size="10"> <!-- c --> </text></svg>')
+    def words(pdf):
+        """[{word: (xMin, yMin, xMax, yMax) in cm from the top-left}] per page."""
+        r=subprocess.run(['pdftotext','-bbox',pdf,'-'],capture_output=True,text=True,check=True).stdout
+        return [{m[4]:tuple(float(v)/72*2.54 for v in m[:4]) for m in
+                 re.findall(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)</word>',pg)}
+                for pg in r.split('<page')[1:]]
+    near=lambda a,b,tol=0.2: abs(a-b)<tol
+    if shutil.which('pdftotext'):
+        flags=['--no-map','--no-calibration','--no-band-labels']
+        out=sh(tsvg,'-o',os.path.join(td,'t0.pdf'),*flags)
+        ck("labels counted, blank text skipped", "text         5 labels" in out)
+        W=words(os.path.join(td,'t0.pdf'))[0]
+        h=W.get('HELLO')
+        ck("HELLO at its SVG position", h and near(h[0],3.0) and h[1]<13.7<h[3], str(h))
+        ck("font size kept (10 mm)", h and 0.8<h[3]-h[1]<1.4, f"{h[3]-h[1]:.2f} cm" if h else "")
+        e=W.get('END')
+        ck("text-anchor=end aligns right edge", e and near(e[2],15.0), str(e))
+        d=W.get('DOWN')
+        ck("rotated text runs downward from its anchor",
+           d and (d[3]-d[1])>2*(d[2]-d[0]) and near(d[1],20.7) and d[0]>8.0, str(d))
+        l1,l2=W.get('LINE1'),W.get('LINE2')
+        ck("tspan lines 1.5 cm apart", l1 and l2 and near(l2[1]-l1[1],1.5,0.05))
+        sh(tsvg,'-o',os.path.join(td,'t90.pdf'),'--rotate','90',*flags)
+        h=words(os.path.join(td,'t90.pdf'))[0].get('HELLO')
+        ck("--rotate 90 turns text with the artwork", h and (h[3]-h[1])>2*(h[2]-h[0]), str(h))
+        sh(tsvg,'-o',os.path.join(td,'t15.pdf'),'--scale-factor','1.5',*flags)
+        ws=[w['HELLO'] for w in words(os.path.join(td,'t15.pdf')) if 'HELLO' in w]
+        w0=W['HELLO'][2]-W['HELLO'][0]
+        ck("--scale-factor scales text", ws and near((ws[0][2]-ws[0][0])/w0,1.5,0.03))
+        sh(tsvg,'-o',os.path.join(td,'tn.pdf'),'--no-text',*flags)
+        ck("--no-text omits text",
+           not {'HELLO','END','DOWN','LINE1','LINE2'} & set(words(os.path.join(td,'tn.pdf'))[0]))
+    else:
+        print("  [skip] pdftotext not found (install poppler)")
+
+print("\n10. standalone build")
 r=subprocess.run([sys.executable, os.path.join(HERE,'build_standalone.py'),'--check'],
                  capture_output=True, text=True)
 ck("svgtile-standalone.py matches modules", r.returncode==0,
