@@ -595,8 +595,9 @@ def main():
 
     # normalise to origin
     x0,y0,x1,y1 = bbox(polys,texts)
-    polys,texts = transform(polys,texts,1.0,a.margin-x0,a.margin-y0)
-    MW, MH = (x1-x0)+2*a.margin, (y1-y0)+2*a.margin
+    # master space = the artwork's bounding box; each sheet adds the paper margin itself
+    polys,texts = transform(polys,texts,1.0,-x0,-y0)
+    MW, MH = x1-x0, y1-y0
 
     USE_W, USE_H = PW-2*a.margin, PH-2*a.margin
     if USE_W<=a.overlap or USE_H<=a.overlap:
@@ -645,7 +646,7 @@ def main():
         lines=[
             (a.title or os.path.basename(a.svg)),
             "",
-            f"Artwork {MW-2*a.margin:.1f} x {MH-2*a.margin:.1f} cm   ->   {NC*NR} sheets of {a.page.upper()}"
+            f"Artwork {MW:.1f} x {MH:.1f} cm   ->   {NC*NR} sheets of {a.page.upper()}"
             f"{' landscape' if a.landscape else ''}",
             f"Scale basis: {info['basis']}",
             f"Rotation applied: {rot*90} deg" if rot else "Rotation applied: none",
@@ -673,7 +674,8 @@ def main():
         c.showPage()
 
     # ---------------- tiles ----------------
-    for r,y0_ in enumerate(RS):
+    for r in reversed(range(NR)):        # top row first, so pages come out as sheet 1..n
+        y0_=RS[r]
         for cc,x0_ in enumerate(CS):
             k=sheet_no(r,cc)
             ox,oy = a.margin-x0_, a.margin-y0_
@@ -736,7 +738,7 @@ def main():
             c.showPage()
     c.save()
 
-    print(f"artwork      {MW-2*a.margin:.2f} x {MH-2*a.margin:.2f} cm")
+    print(f"artwork      {MW:.2f} x {MH:.2f} cm")
     print(f"scale basis  {info['basis']}")
     if info['nonuniform']:
         print(f"WARNING      non-uniform scale (x {info['k_x']:.5f} vs y {info['k_y']:.5f} cm/unit)")

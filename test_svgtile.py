@@ -51,15 +51,21 @@ with tempfile.TemporaryDirectory() as td:
     h=float(rd.pages[0].mediabox.height)/72*2.54
     ck("A4 page size", abs(w-21)<0.02 and abs(h-29.7)<0.02, f"{w:.3f} x {h:.3f} cm")
 
-    print("\n4. neighbour labels reference real sheets")
-    sh(svg,'-o',os.path.join(td,'d.pdf'),'--title','test')
+    print("\n4. page order and neighbour labels")
+    # 40 x 45 cm drawing -> several rows and columns, so page order matters
+    tall=os.path.join(td,'tall.svg')
+    open(tall,'w').write('<svg xmlns="http://www.w3.org/2000/svg" width="400mm" height="450mm" '
+        'viewBox="0 0 400 450"><rect x="0" y="0" width="400" height="450" fill="none" stroke="black"/></svg>')
+    sh(tall,'-o',os.path.join(td,'d.pdf'),'--title','test')
     rd=PdfReader(os.path.join(td,'d.pdf'))
     m=re.search(r'(\d+) across x (\d+) down', rd.pages[0].extract_text())
     NC,NR=int(m.group(1)),int(m.group(2)); n=NC*NR
-    def sn(r,c): return (NR-1-r)*NC+c+1
+    ck("test drawing spans several rows", NR>1 and NC>1, f"{NC} x {NR}")
+    order=[int(re.search(r'SHEET (\d+) of',pg.extract_text()).group(1)) for pg in rd.pages[1:]]
+    ck("pages printed in sheet order 1..n", order==list(range(1,n+1)), str(order))
     bad=0
     for i,pg in enumerate(rd.pages[1:]):
-        r,c=divmod(i,NC); k=sn(r,c)
+        k=i+1; top_row,c=divmod(i,NC); r=NR-1-top_row   # r counts rows from the bottom
         refs=set(int(x) for x in re.findall(r'shared with sheet (\d+)', pg.extract_text() or ""))
         exp=set()
         if c>0: exp.add(k-1)
@@ -139,9 +145,9 @@ with tempfile.TemporaryDirectory() as td:
         print("  [skip] pdftoppm not found (install poppler)")
 
     print("\n9. text")
-    # 15 x 20 cm frame on one A4 sheet. The artwork sits 2 x margin (1 cm) from the
+    # 15 x 20 cm frame on one A4 sheet. The artwork starts at the 0.5 cm margin from the
     # bottom-left paper edge, so point (x,y) mm in the SVG lands at
-    # x = 1.0 + x/10 cm from the left, y = 29.7 - 1.0 - 20 + y/10 = 8.7 + y/10 cm from the top.
+    # x = 0.5 + x/10 cm from the left, y = 29.7 - 0.5 - 20 + y/10 = 9.2 + y/10 cm from the top.
     tsvg=os.path.join(td,'txt.svg')
     open(tsvg,'w').write('<svg xmlns="http://www.w3.org/2000/svg" width="150mm" height="200mm" viewBox="0 0 150 200">'
         '<rect x="0" y="0" width="150" height="200" fill="none" stroke="black"/>'
@@ -163,13 +169,13 @@ with tempfile.TemporaryDirectory() as td:
         ck("labels counted, blank text skipped", "text         5 labels" in out)
         W=words(os.path.join(td,'t0.pdf'))[0]
         h=W.get('HELLO')
-        ck("HELLO at its SVG position", h and near(h[0],3.0) and h[1]<13.7<h[3], str(h))
+        ck("HELLO at its SVG position", h and near(h[0],2.5) and h[1]<14.2<h[3], str(h))
         ck("font size kept (10 mm)", h and 0.8<h[3]-h[1]<1.4, f"{h[3]-h[1]:.2f} cm" if h else "")
         e=W.get('END')
-        ck("text-anchor=end aligns right edge", e and near(e[2],15.0), str(e))
+        ck("text-anchor=end aligns right edge", e and near(e[2],14.5), str(e))
         d=W.get('DOWN')
         ck("rotated text runs downward from its anchor",
-           d and (d[3]-d[1])>2*(d[2]-d[0]) and near(d[1],20.7) and d[0]>8.0, str(d))
+           d and (d[3]-d[1])>2*(d[2]-d[0]) and near(d[1],21.2) and d[0]>7.5, str(d))
         l1,l2=W.get('LINE1'),W.get('LINE2')
         ck("tspan lines 1.5 cm apart", l1 and l2 and near(l2[1]-l1[1],1.5,0.05))
         sh(tsvg,'-o',os.path.join(td,'t90.pdf'),'--rotate','90',*flags)
