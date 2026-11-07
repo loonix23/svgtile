@@ -89,6 +89,28 @@ the SVG is wrong — one axis will be stretched.
 
 **Always measure the 2 cm calibration square on sheet 1 before cutting fabric.**
 
+### Printing at 100%
+
+The PDF is exact; print dialogs often aren't. Because artwork runs to within
+5 mm of the paper edge, many viewers and CUPS drivers silently "shrink to
+printable area" — even with 100% selected. A ~4% shrink (calibration square
+reads 19.2 mm instead of 20 mm) is the telltale sign.
+
+In the print dialog, set page scaling to **None / Actual size** and untick
+"Shrink oversized pages" / "Fit to printable area". Or skip the viewer and print
+directly with CUPS:
+
+```bash
+lpstat -e                                # list printer queues
+lpoptions -d <printer>                   # optional: make one the default
+lp -d <printer> -o fit-to-page=false -o print-scaling=none sheets.pdf
+lp ... -o page-ranges=2-                 # skip the assembly map page
+```
+
+If the square is still short, the driver itself is scaling: regenerate with a
+larger `--margin` (e.g. `--margin 1`) so the artwork sits inside the printer's
+printable area.
+
 `--scale-factor 1.05` enlarges the finished artwork by 5% (seam allowance
 experiments, shrinkage compensation). It is *not* a scale fix — fix the source.
 
