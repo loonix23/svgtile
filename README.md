@@ -121,6 +121,12 @@ The default assumes **no trimming**: artwork runs to within `--margin` (default
 (default 3 cm). Lay one sheet over the next on a light table, align the
 registration marks, glue.
 
+The dash-dot **glue line** on each sheet shows where the neighbour's *paper
+edge* lands: `2 × margin + overlap` (4 cm by default) from the edge. Put the
+neighbour's edge on the line for a rough fit, then fine-tune with the marks.
+The paper overlap is wider than the artwork band because each sheet's
+unprintable margin is part of the overlap.
+
 Each mark is a cross-in-circle labelled with its **master coordinate**
 (e.g. `34,18`). The marks are generated in master space and every mark falling
 inside a shared band is emitted by *both* sheets — so pairing is structural, and

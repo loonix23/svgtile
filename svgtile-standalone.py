@@ -665,6 +665,7 @@ def main():
             "  coordinate. The SAME mark and number is printed on BOTH sheets sharing a",
             "  glue band - lay the crosses on top of each other on a light table, check",
             "  the numbers agree, then glue. Work along the top row, then each row below.",
+            "  The dash-dot line on each sheet is where the neighbour's PAPER EDGE lands.",
             "",
             "No colour is used anywhere - safe for a monochrome laser printer.",
         ]
@@ -685,31 +686,33 @@ def main():
 
             px1 = a.margin+min(USE_W, MW-x0_)
             py1 = a.margin+min(USE_H, MH-y0_)
-            # glue band boundaries
+            # glue lines: where the NEIGHBOUR's paper edge lands once the marks are
+            # aligned (its unprintable margin lies beyond the shared band)
             if not a.no_band_labels:
+             edge=2*a.margin+a.overlap
              c.setLineWidth(0.6); c.setDash([6,2,1,2]); c.setStrokeColor(black)
              c.setFont('Helvetica',5.2)
              if cc>0:
-                 gx=a.margin+a.overlap
+                 gx=edge
                  c.line(gx*CM,0,gx*CM,PH*CM)
                  c.saveState(); c.translate((gx-0.15)*CM,(PH/2)*CM); c.rotate(90)
-                 c.drawRightString(0,0,f"<- {a.overlap:.0f} cm GLUE BAND shared with sheet {k-1}"); c.restoreState()
+                 c.drawRightString(0,0,f"<- GLUE BAND shared with sheet {k-1} - its paper edge goes on this line"); c.restoreState()
              if cc<NC-1:
-                 gx=PW-a.margin-a.overlap
+                 gx=PW-edge
                  c.line(gx*CM,0,gx*CM,PH*CM)
                  c.saveState(); c.translate((gx+0.15)*CM,(PH/2)*CM); c.rotate(90)
-                 c.drawString(0,0,f"{a.overlap:.0f} cm GLUE BAND shared with sheet {k+1} ->"); c.restoreState()
+                 c.drawString(0,0,f"sheet {k+1}'s paper edge goes on this line - GLUE BAND shared with sheet {k+1} ->"); c.restoreState()
              # page BOTTOM = low master y -> neighbour is the row below (exists when r>0),
              # which prints as a HIGHER sheet number (k+NC).
              if r>0:
-                 gy=a.margin+a.overlap
+                 gy=edge
                  c.line(0,gy*CM,PW*CM,gy*CM)
-                 c.drawCentredString((PW/2)*CM,(gy-0.32)*CM,f"v {a.overlap:.0f} cm GLUE BAND shared with sheet {k+NC}")
+                 c.drawCentredString((PW/2)*CM,(gy-0.32)*CM,f"v GLUE BAND shared with sheet {k+NC} - its paper edge goes on this line")
              # page TOP = high master y -> neighbour is the row above (exists when r<NR-1) = k-NC
              if r<NR-1:
-                 gy=PH-a.margin-a.overlap
+                 gy=PH-edge
                  c.line(0,gy*CM,PW*CM,gy*CM)
-                 c.drawCentredString((PW/2)*CM,(gy+0.18)*CM,f"^ {a.overlap:.0f} cm GLUE BAND shared with sheet {k-NC}")
+                 c.drawCentredString((PW/2)*CM,(gy+0.18)*CM,f"^ GLUE BAND shared with sheet {k-NC} - its paper edge goes on this line")
              c.setDash([])
 
             if a.trim_marks:
