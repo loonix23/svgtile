@@ -305,10 +305,10 @@ def main():
              if not a.no_calibration else ""),
             "",
             "ASSEMBLY - NO TRIMMING NEEDED:" if not a.trim_marks else "ASSEMBLY - TRIM AT CROP MARKS:",
-            (f"  Artwork runs to within {a.margin*10:.0f} mm of the paper edge and every sheet"
+            (f"  Neighbouring sheets share a {a.overlap:g} cm band of identical artwork. Each"
              if not a.trim_marks else "  Trim each sheet on the corner crop marks, then butt them together."),
-            (f"  overlaps its neighbour by {a.overlap:.0f} cm, so sheets glue as printed."
-             if not a.trim_marks else ""),
+            (f"  sheet also has a {a.margin*10:g} mm unprinted border, so the PAPER overlaps by"
+             f" {a.overlap+2*a.margin:g} cm." if not a.trim_marks else ""),
             "  Each registration mark is a CROSS IN A CIRCLE labelled with its master",
             "  coordinate. The SAME mark and number is printed on BOTH sheets sharing a",
             "  glue band - lay the crosses on top of each other on a light table, check",

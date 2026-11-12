@@ -121,15 +121,14 @@ experiments, shrinkage compensation). It is *not* a scale fix — fix the source
 ## Assembly model
 
 The default assumes **no trimming**: artwork runs to within `--margin` (default
-5 mm) of the paper edge, and each sheet overlaps its neighbour by `--overlap`
-(default 3 cm). Lay one sheet over the next on a light table, align the
-registration marks, glue.
+5 mm) of the paper edge, and neighbouring sheets share an `--overlap` band
+(default 3 cm) of identical artwork. With the margins on both sheets, the paper
+itself overlaps by `2 × margin + overlap` (4 cm by default).
 
-The dash-dot **glue line** on each sheet shows where the neighbour's *paper
-edge* lands: `2 × margin + overlap` (4 cm by default) from the edge. Put the
-neighbour's edge on the line for a rough fit, then fine-tune with the marks.
-The paper overlap is wider than the artwork band because each sheet's
-unprintable margin is part of the overlap.
+The dash-dot **glue line** on each sheet is drawn that far from the edge, where
+the neighbour's *paper edge* lands. Lay one sheet over the next on a light
+table, put its edge on the line for a rough fit, align the registration marks,
+glue.
 
 Each mark is a cross-in-circle labelled with its **master coordinate**
 (e.g. `34,18`). The marks are generated in master space and every mark falling
