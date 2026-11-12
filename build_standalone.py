@@ -18,7 +18,7 @@ MODULES = [
 LOCAL = {os.path.splitext(m)[0] for m, _ in MODULES}
 HEADER = '''#!/usr/bin/env python3
 """
-svgtile - split an SVG into glue-together A4 PDF sheets at true 1:1 scale.
+svgtile - split an SVG into glue-together paper sheets (A4 by default) at true 1:1 scale.
 Single-file build. Requires: reportlab, lxml.
 Copyright (c) 2026 loonix23. MIT License - see LICENSE in the source distribution.
 Docs + tests: see README.md in the source distribution.

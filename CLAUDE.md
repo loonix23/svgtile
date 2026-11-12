@@ -11,12 +11,14 @@ glue-together paper sheets as a PDF at true 1:1 scale. User-facing docs: README.
 - `svgtile-standalone.py` — **generated** single-file build. Never edit by hand;
   edit the modules, then run `python3 build_standalone.py`.
 - `test_svgtile.py` — self-test script (not pytest); also fails if the standalone is stale.
+- `examples/` — demo SVG and its tiled PDF. Regenerate the PDF when output changes.
+  Patterns being tiled are user data: never commit them (see `.gitignore`).
 
 ## Commands
 
 ```bash
 python3 build_standalone.py                     # regenerate standalone after any module change
-python3 svgtile.py Bag-2.0_Pattern__.svg -o /tmp/out.pdf   # real-world sample (untracked)
+python3 svgtile.py examples/demo.svg -o examples/demo.pdf --title "svgtile demo"   # regenerate the example
 python3 test_svgtile.py   # needs pypdf, numpy, and pdftoppm (poppler)
 ```
 

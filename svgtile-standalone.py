@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-svgtile - split an SVG into glue-together A4 PDF sheets at true 1:1 scale.
+svgtile - split an SVG into glue-together paper sheets (A4 by default) at true 1:1 scale.
 Single-file build. Requires: reportlab, lxml.
 Copyright (c) 2026 loonix23. MIT License - see LICENSE in the source distribution.
 Docs + tests: see README.md in the source distribution.
@@ -533,7 +533,7 @@ def draw_texts(c, texts, ox, oy):
 
 # ---------------------------------------------------------------- main
 def main():
-    ap=argparse.ArgumentParser(description="Split an SVG into glue-together A4 PDF sheets at true 1:1 scale.")
+    ap=argparse.ArgumentParser(description="Split an SVG into glue-together paper sheets (A4 by default) as a PDF at true 1:1 scale.")
     ap.add_argument('svg')
     ap.add_argument('-o','--output', help='output PDF (default: <input>_tiled.pdf)')
     ap.add_argument('--rotate', type=int, default=0, choices=[0,90,180,270],

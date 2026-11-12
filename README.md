@@ -1,8 +1,17 @@
 # svgtile
 
-Split an SVG into glue-together A4 sheets at **true 1:1 scale**. Built for sewing
-patterns: vector output, monochrome (laser-printer safe), and registration marks
-that are guaranteed to pair up for light-table alignment.
+Split an SVG into glue-together paper sheets (A4, Letter, A3 or Legal) at
+**true 1:1 scale**. Built for sewing patterns: vector output, monochrome
+(laser-printer safe), and registration marks that are guaranteed to pair up for
+light-table alignment.
+
+Example: [`examples/demo.svg`](examples/demo.svg), a 35 × 25 cm test drawing,
+tiles to [`examples/demo.pdf`](examples/demo.pdf), an assembly map plus 2 A4
+sheets. Print it to check your printer before printing a real pattern:
+
+```bash
+python3 svgtile.py examples/demo.svg -o examples/demo.pdf --title "svgtile demo"
+```
 
 ## Install
 
@@ -31,9 +40,18 @@ mv ~/tools/svgtile.py ~/tools/svgtile
 Note this drops `svgdoc.py` and `svgpath.py` — generic names — into a PATH
 directory. Harmless (they aren't executable), but the single file avoids it.
 
-### Dependencies on Arch
+### Dependencies
 
-`pip install` into the system Python is blocked by PEP 668. Use pacman:
+svgtile needs Python 3 with `reportlab` and `lxml`:
+
+```bash
+pip install reportlab lxml
+```
+
+The self-test (`test_svgtile.py`) also needs `pypdf`, `numpy` and poppler's
+`pdftoppm`.
+
+On Arch, `pip install` into the system Python is blocked by PEP 668. Use pacman:
 
 ```bash
 sudo pacman -S python-reportlab python-lxml
@@ -61,10 +79,8 @@ python3 svgtile.py pattern.svg                       # -> pattern_tiled.pdf
 python3 svgtile.py pattern.svg -o out.pdf --rotate 90
 python3 svgtile.py pattern.svg --auto-rotate         # rotate only if it saves sheets
 python3 svgtile.py pattern.svg --page a3 --overlap 4
+python3 svgtile.py pattern.svg --page letter         # US Letter paper
 ```
-
-Requires `reportlab` and `lxml` (`pip install reportlab lxml`).
-The self-test additionally needs `pypdf`, `numpy` and poppler's `pdftoppm`.
 
 ## Scale — read this first
 
@@ -86,6 +102,14 @@ Resolution order:
 If `width`/`height` disagree in aspect ratio with `viewBox`, you get a
 `WARNING: non-uniform scale` line. For a sewing pattern that almost always means
 the SVG is wrong — one axis will be stretched.
+
+### Paper size
+
+Tile for the paper you will actually print on. A4 is the default; use
+`--page letter` for US Letter. An A4 PDF printed on Letter paper does not fit:
+Letter is 1.8 cm shorter, so the printer either cuts off the edge or shrinks the
+page to fit, and shrinking breaks the 1:1 scale. When sharing a pattern, publish
+one PDF per paper size.
 
 **Always measure the calibration marks on sheet 1 before cutting fabric.** The
 2 cm square shows gross scaling (a print dialog's ~4% shrink). The 10 cm

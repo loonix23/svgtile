@@ -179,7 +179,7 @@ def draw_texts(c, texts, ox, oy):
 
 # ---------------------------------------------------------------- main
 def main():
-    ap=argparse.ArgumentParser(description="Split an SVG into glue-together A4 PDF sheets at true 1:1 scale.")
+    ap=argparse.ArgumentParser(description="Split an SVG into glue-together paper sheets (A4 by default) as a PDF at true 1:1 scale.")
     ap.add_argument('svg')
     ap.add_argument('-o','--output', help='output PDF (default: <input>_tiled.pdf)')
     ap.add_argument('--rotate', type=int, default=0, choices=[0,90,180,270],
