@@ -192,3 +192,7 @@ python3 test_svgtile.py
 Checks scale resolution, rotation, page geometry, neighbour labelling, transform
 accuracy, arc geometry, and — end to end — that overlapping sheets render
 pixel-identical artwork in their shared glue band.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
