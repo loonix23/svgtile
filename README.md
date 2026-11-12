@@ -87,7 +87,11 @@ If `width`/`height` disagree in aspect ratio with `viewBox`, you get a
 `WARNING: non-uniform scale` line. For a sewing pattern that almost always means
 the SVG is wrong — one axis will be stretched.
 
-**Always measure the 2 cm calibration square on sheet 1 before cutting fabric.**
+**Always measure the calibration marks on sheet 1 before cutting fabric.** The
+2 cm square shows gross scaling (a print dialog's ~4% shrink). The 10 cm
+reference line shows the small scaling some printers add on their own: 0.5% is
+only 0.1 mm on the square but 0.5 mm on the line. Measure between its end
+ticks; it should read 99.5–100.5 mm.
 
 ### Printing at 100%
 
@@ -155,7 +159,7 @@ edge if you want perfect continuity.
 | `--line-width N` | default stroke width, pt |
 | `--mark-spacing N` | cm between registration marks (default 4) |
 | `--no-band-labels` | omit glue-band lines/labels for cleaner sheets |
-| `--no-map` / `--no-calibration` | omit the map page / calibration square |
+| `--no-map` / `--no-calibration` | omit the map page / calibration square and reference line |
 | `--no-text` | omit the SVG's text |
 
 ## SVG support

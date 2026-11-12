@@ -206,7 +206,7 @@ def main():
     ap.add_argument('--no-band-labels', action='store_true',
                     help='omit glue-band boundary lines and labels (cleaner sheets; '
                          'also makes overlapping sheets pixel-identical in the band)')
-    ap.add_argument('--no-calibration', action='store_true', help='skip the 2 cm calibration square')
+    ap.add_argument('--no-calibration', action='store_true', help='skip the 2 cm calibration square and 10 cm reference line')
     ap.add_argument('--no-text', action='store_true', help='omit the SVG\'s text')
     ap.add_argument('--title', default=None, help='title printed on the map page')
     a=ap.parse_args()
@@ -300,7 +300,8 @@ def main():
             f"Rotation applied: {rot*90} deg" if rot else "Rotation applied: none",
             "",
             "PRINTING: 100% / \"Actual Size\". NOT \"Fit to page\".",
-            ("Sheet 1 carries a 2 cm calibration square - measure it before cutting."
+            ("Sheet 1 carries a 2 cm calibration square and a 10 cm reference line -"
+             " measure both before cutting."
              if not a.no_calibration else ""),
             "",
             "ASSEMBLY - NO TRIMMING NEEDED:" if not a.trim_marks else "ASSEMBLY - TRIM AT CROP MARKS:",
@@ -379,6 +380,16 @@ def main():
                 c.setFont('Helvetica',5)
                 c.drawString((a.margin+0.4)*CM,(PH-a.margin-3.0)*CM,
                              "2 cm CALIBRATION SQUARE - measure before cutting")
+                # 10 cm reference line beside the square: 0.5% printer scaling is
+                # 0.1 mm on the square but 0.5 mm here, so this one shows it
+                lx0=a.margin+3.0; ly=PH-a.margin-1.6
+                c.line(lx0*CM,ly*CM,(lx0+10)*CM,ly*CM)
+                for i in range(11):
+                    t=0.3 if i in (0,10) else (0.2 if i==5 else 0.12)
+                    c.line((lx0+i)*CM,(ly-t)*CM,(lx0+i)*CM,(ly+t)*CM)
+                c.drawString(lx0*CM,(ly-0.75)*CM,
+                             "10 cm REFERENCE LINE - measure between the end ticks;"
+                             " under 99.5 mm or over 100.5 mm means the printer is scaling")
 
             c.setFont('Helvetica-Bold',7.5)
             c.drawCentredString((PW/2)*CM,(PH-0.42)*CM,

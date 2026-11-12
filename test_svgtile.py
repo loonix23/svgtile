@@ -59,6 +59,19 @@ with tempfile.TemporaryDirectory() as td:
     h=float(rd.pages[0].mediabox.height)/72*2.54
     ck("A4 page size", abs(w-21)<0.02 and abs(h-29.7)<0.02, f"{w:.3f} x {h:.3f} cm")
 
+    if HAVE_PDFTOPPM:
+        # 10 cm reference line on sheet 1: end ticks are 0.3 cm tall, cm ticks only
+        # 0.12 (0.2 at 5), so a row 0.25 cm above the line crosses just the end ticks
+        S1=render(os.path.join(td,'a.pdf'),1,td)<128
+        row=S1[cm(0.5+1.6-0.25), cm(0.5+2.5):cm(0.5+13.5)]
+        xs=np.where(row)[0]
+        L=None
+        if len(xs):
+            gap=np.argmax(np.diff(xs)); left,right=xs[:gap+1],xs[gap+1:]
+            if len(left) and len(right): L=(right.mean()-left.mean())/DPI*2.54
+        ck("10 cm reference line is 10 cm between end ticks",
+           L is not None and abs(L-10)<0.01, f"{L:.4f} cm" if L else "ticks not found")
+
     print("\n4. page order and neighbour labels")
     # 40 x 45 cm drawing -> several rows and columns, so page order matters
     tall=os.path.join(td,'tall.svg')
